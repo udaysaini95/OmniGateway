@@ -90,8 +90,8 @@ app.post("/keys/register", (req, res) => {
   if (!geminiKey || !groqKey) {
     return res.status(400).json({ error: "Both geminiKey and groqKey are required." });
   }
-  if (!geminiKey.startsWith("AIza")) {
-    return res.status(400).json({ error: "Invalid Gemini key format. Should start with 'AIza'." });
+  if (!geminiKey || geminiKey.trim().length < 20) {
+    return res.status(400).json({ error: "Invalid Gemini key. Please enter a valid API key from Google AI Studio." });
   }
   if (!groqKey.startsWith("gsk_")) {
     return res.status(400).json({ error: "Invalid Groq key format. Should start with 'gsk_'." });

@@ -98,7 +98,7 @@ export default function KeyRegistration({ onTokenSet }) {
                 type={showGemini ? "text" : "password"}
                 value={geminiKey}
                 onChange={e => setGeminiKey(e.target.value)}
-                placeholder="AIzaSy..."
+                placeholder="Paste Gemini API key..."
                 required
                 style={{ paddingRight: 40 }}
               />

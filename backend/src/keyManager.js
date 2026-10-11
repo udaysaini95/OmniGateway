@@ -1,9 +1,10 @@
-// keyManager.js — BYOK: AES-256-CBC Encryption & Key Registry
-// User API keys are encrypted before in-memory storage.
-// Raw keys are NEVER stored, logged, or re-returned after registration.
+// keyManager.js — BYOK: AES-256-CBC Encryption & Multi-Key Multiplexing Pool
+// Supports multi-key round-robin rotation per provider to maximize free-tier throughput.
+// Persists encrypted records across server restarts via persistentStore.
 
 import crypto from "crypto";
 import "dotenv/config";
+import { persistentStore } from "./storage.js";
 
 const SECRET = process.env.ENCRYPTION_SECRET;
 
@@ -15,14 +16,11 @@ if (!SECRET || SECRET.length < 32) {
   process.exit(1);
 }
 
-// In-memory keyStore. V2: replace with MongoDB.
-// Key: gatewayToken (e.g. "omni_abc123")
-// Value: { name, gemini (encrypted), groq (encrypted), createdAt, requestCount }
-const keyStore = new Map();
+// In-memory key pointer indices for round-robin rotation
+const rotationIndices = new Map();
 
 /**
  * Encrypt a plaintext string with AES-256-CBC.
- * Returns "ivHex:cipherHex"
  */
 function encrypt(text) {
   const iv = crypto.randomBytes(16);
@@ -53,69 +51,88 @@ function decrypt(encryptedText) {
 }
 
 /**
- * Register a new user's Gemini + Groq keys.
- * Encrypts both before storing; returns a new opaque gateway token.
- * @param {string} geminiKey - User's raw Gemini API key
- * @param {string} groqKey   - User's raw Groq API key
- * @param {string} name      - Optional label for the key set
- * @returns {string} gatewayToken e.g. "omni_a3f9c12e4b87..."
+ * Normalize an input into an array of trimmed keys
  */
-export function registerKey(geminiKey, groqKey, name = "default") {
+function parseKeyArray(input) {
+  if (Array.isArray(input)) return input.map(k => String(k).trim()).filter(Boolean);
+  if (typeof input === "string") {
+    return input.split(/[\n,]/).map(k => k.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+/**
+ * Register a new user's Gemini + Groq keys (supports single key or multi-key arrays).
+ * Encrypts all keys before storing.
+ */
+export function registerKey(geminiKeysInput, groqKeysInput, name = "default") {
+  const geminiKeys = parseKeyArray(geminiKeysInput);
+  const groqKeys = parseKeyArray(groqKeysInput);
+
+  if (geminiKeys.length === 0 || groqKeys.length === 0) {
+    throw new Error("At least one Gemini key and one Groq key are required.");
+  }
+
   const gatewayToken = "omni_" + crypto.randomBytes(12).toString("hex");
-  keyStore.set(gatewayToken, {
+
+  const record = {
     name,
-    gemini: encrypt(geminiKey),
-    groq: encrypt(groqKey),
+    geminiPool: geminiKeys.map(k => encrypt(k)),
+    groqPool: groqKeys.map(k => encrypt(k)),
     createdAt: Date.now(),
     requestCount: 0,
-  });
+  };
+
+  persistentStore.setKey(gatewayToken, record);
+  rotationIndices.set(gatewayToken, { gemini: 0, groq: 0 });
+
   console.log(
-    `[keyManager] Registered new gateway token for "${name}": ${gatewayToken.slice(0, 12)}...`
+    `[keyManager] Registered token ${gatewayToken.slice(0, 14)}... with ${geminiKeys.length} Gemini & ${groqKeys.length} Groq key(s).`
   );
+
   return gatewayToken;
 }
 
 /**
- * Resolve a gateway token to decrypted API keys.
- * Returns null if token is unknown.
- * @param {string} gatewayToken
- * @returns {{ geminiKey: string, groqKey: string } | null}
+ * Resolve a gateway token to decrypted API keys with Round-Robin Rotation.
+ * Multiplexes across user's key pool to distribute RPM quota.
  */
 export function resolveKeys(gatewayToken) {
-  const entry = keyStore.get(gatewayToken);
-  if (!entry) return null;
-  entry.requestCount++;
+  const record = persistentStore.getKey(gatewayToken);
+  if (!record) return null;
+
+  record.requestCount = (record.requestCount || 0) + 1;
+  persistentStore.setKey(gatewayToken, record);
+
+  let idxState = rotationIndices.get(gatewayToken);
+  if (!idxState) {
+    idxState = { gemini: 0, groq: 0 };
+    rotationIndices.set(gatewayToken, idxState);
+  }
+
+  // Handle single key backward compatibility or pool
+  const geminiPool = record.geminiPool || (record.gemini ? [record.gemini] : []);
+  const groqPool = record.groqPool || (record.groq ? [record.groq] : []);
+
+  const geminiEncrypted = geminiPool[idxState.gemini % geminiPool.length];
+  const groqEncrypted = groqPool[idxState.groq % groqPool.length];
+
+  // Rotate indices for next request
+  idxState.gemini = (idxState.gemini + 1) % geminiPool.length;
+  idxState.groq = (idxState.groq + 1) % groqPool.length;
+
   return {
-    geminiKey: decrypt(entry.gemini),
-    groqKey: decrypt(entry.groq),
+    geminiKey: decrypt(geminiEncrypted),
+    groqKey: decrypt(groqEncrypted),
+    // Also provide complete backup pools for in-flight 429 retries
+    geminiPool: geminiPool.map(k => decrypt(k)),
+    groqPool: groqPool.map(k => decrypt(k)),
   };
 }
 
 /**
- * Get info about a registered token (no raw keys exposed).
- */
-export function getKeyInfo(gatewayToken) {
-  const entry = keyStore.get(gatewayToken);
-  if (!entry) return null;
-  return {
-    name: entry.name,
-    createdAt: entry.createdAt,
-    requestCount: entry.requestCount,
-  };
-}
-
-/**
- * List all registered tokens (no raw keys — metadata only).
+ * List all registered tokens (metadata only)
  */
 export function listKeys() {
-  const result = [];
-  for (const [token, entry] of keyStore.entries()) {
-    result.push({
-      gatewayToken: token.slice(0, 14) + "...",
-      name: entry.name,
-      createdAt: entry.createdAt,
-      requestCount: entry.requestCount,
-    });
-  }
-  return result;
+  return persistentStore.getAllKeys();
 }

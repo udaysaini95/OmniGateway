@@ -18,6 +18,7 @@ export default function Playground() {
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [cacheEnabled, setCacheEnabled] = useState(true);
   const textareaRef = useRef(null);
 
   const hasToken = !!getStoredToken();
@@ -33,7 +34,7 @@ export default function Playground() {
     const newMessages = [...messages, userMsg];
 
     try {
-      const data = await sendMessage(newMessages);
+      const data = await sendMessage(newMessages, !cacheEnabled);
       const assistantText = data.choices?.[0]?.message?.content ?? "";
       setMessages([...newMessages, { role: "assistant", content: assistantText }]);
       setResponse(assistantText);
@@ -68,11 +69,22 @@ export default function Playground() {
           <span className="title-icon"><Zap size={14} /></span>
           Live Playground
         </h2>
-        {messages.length > 0 && (
-          <button id="clear-conversation-btn" className="btn btn-secondary btn-sm" onClick={clearConversation}>
-            Clear
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: "var(--text-secondary)" }}>
+            <input
+              type="checkbox"
+              checked={cacheEnabled}
+              onChange={e => setCacheEnabled(e.target.checked)}
+              style={{ accentColor: "var(--accent)", cursor: "pointer" }}
+            />
+            <span>Cache: <strong style={{ color: cacheEnabled ? "var(--success)" : "var(--text-muted)" }}>{cacheEnabled ? "ON" : "OFF"}</strong></span>
+          </label>
+          {messages.length > 0 && (
+            <button id="clear-conversation-btn" className="btn btn-secondary btn-sm" onClick={clearConversation}>
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       {!hasToken && (

@@ -29,12 +29,17 @@ export async function registerKeys(geminiKey, groqKey, name) {
 }
 
 // ── Chat Completions (the core proxy call) ─────────────────────────────────
-export async function sendMessage(messages) {
+export async function sendMessage(messages, bypassCache = false) {
   if (!gatewayToken) throw new Error("No gateway token. Register your API keys first.");
+  const headers = { Authorization: `Bearer ${gatewayToken}` };
+  if (bypassCache) {
+    headers["Cache-Control"] = "no-cache";
+    headers["x-omni-no-cache"] = "true";
+  }
   const res = await api.post(
     "/v1/chat/completions",
     { model: "default", messages },
-    { headers: { Authorization: `Bearer ${gatewayToken}` } }
+    { headers }
   );
   return res.data;
 }

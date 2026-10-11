@@ -1,7 +1,7 @@
 // KeyRegistration.jsx — BYOK Key Registration Form
 import { useState } from "react";
 import { Key, Eye, EyeOff, Copy, Check, Shield, AlertCircle } from "lucide-react";
-import { registerKeys, setGatewayToken, getStoredToken } from "../services/api.js";
+import { registerKeys, setGatewayToken, getStoredToken, clearToken } from "../services/api.js";
 
 export default function KeyRegistration({ onTokenSet }) {
   const [geminiKey, setGeminiKey] = useState("");
@@ -62,7 +62,7 @@ export default function KeyRegistration({ onTokenSet }) {
             <button id="copy-token-btn" className="btn btn-secondary btn-sm" onClick={copyToken}>
               {copied ? <><Check size={12} /> Copied!</> : <><Copy size={12} /> Copy Token</>}
             </button>
-            <button id="new-token-btn" className="btn btn-secondary btn-sm" onClick={() => { setToken(null); setError(null); }}>
+            <button id="new-token-btn" className="btn btn-secondary btn-sm" onClick={() => { clearToken(); setToken(null); setError(null); onTokenSet?.(null); }}>
               Register New Keys
             </button>
           </div>

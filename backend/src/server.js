@@ -202,10 +202,13 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
           });
         }
       } catch (upstreamErr) {
+        const geminiErrMsg = upstreamErr.response?.data?.error?.message || upstreamErr.message;
+        console.error("[server] Gemini upstream error:", geminiErrMsg, upstreamErr.response?.data || "");
+
         // If Gemini failed, record failure and fallback to Groq
         if (providerUsed === "gemini") {
           recordFailure();
-          console.warn("[server] Gemini failed, falling back to Groq:", upstreamErr.message);
+          console.warn("[server] Gemini failed, falling back to Groq. Reason:", geminiErrMsg);
           try {
             const result = await callGroq(messages, req.userKeys.groqKey);
             responseText = result.text;
@@ -217,10 +220,15 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
               storeCache({ promptEmbedding: queryEmbedding, originalPrompt: userPrompt, response: responseText, model: modelUsed, tokens: completionTokens });
             }
           } catch (groqErr) {
-            return res.status(502).json({ error: "Both Gemini and Groq failed.", details: groqErr.message });
+            const groqErrMsg = groqErr.response?.data?.error?.message || groqErr.message;
+            console.error("[server] Groq fallback error:", groqErrMsg, groqErr.response?.data || "");
+            return res.status(502).json({
+              error: `Both providers failed. Gemini: "${geminiErrMsg}" | Groq: "${groqErrMsg}"`,
+              details: { gemini: geminiErrMsg, groq: groqErrMsg },
+            });
           }
         } else {
-          return res.status(502).json({ error: "Groq request failed.", details: upstreamErr.message });
+          return res.status(502).json({ error: `Groq request failed: ${geminiErrMsg}` });
         }
       }
     } else {

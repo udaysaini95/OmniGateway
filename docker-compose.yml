@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # 1. Distributed Cache & Rate Limiting Engine
+  redis:
+    image: redis:7-alpine
+    container_name: omnigateway-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2. High-Performance Go Data Plane (Edge Proxy)
+  gateway-edge:
+    build:
+      context: ./gateway-edge-go
+      dockerfile: Dockerfile
+    container_name: omnigateway-edge
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - EDGE_PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - NODE_BACKEND_URL=http://backend:4000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  # 3. Node.js Control Plane & Semantic Vector Engine
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: omnigateway-backend
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    volumes:
+      - backend_store:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # 4. React Vite Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: omnigateway-frontend
+    restart: always
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:4000
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:
+  backend_store:

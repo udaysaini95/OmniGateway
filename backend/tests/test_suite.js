@@ -36,12 +36,12 @@ async function runTests() {
   assert(resolved2.geminiKey === "AIzaSyTestKey2", "Round-Robin rotates to Key 2 on second call");
   assert(resolved1.geminiPool.length === 2, "Full key pool accessible for in-flight retries");
 
-  // 2. Token Bucket Rate Limiting
+  // 2. Token Bucket Rate Limiting (Async Dual-Mode)
   console.log("\n--- 2. Token-Bucket Rate Limiter ---");
   const testToken = "omni_rate_limit_test";
   let allowedCount = 0;
   for (let i = 0; i < 25; i++) {
-    const rl = checkRateLimit(testToken);
+    const rl = await checkRateLimit(testToken);
     if (rl.allowed) allowedCount++;
   }
   assert(allowedCount === 20, `Capacity enforcement: exactly 20 calls allowed, got ${allowedCount}`);
@@ -77,11 +77,11 @@ async function runTests() {
   });
 
   // Query Chat A (Exact match L1)
-  const lookupA = lookupCache({ messages: chatA, queryEmbedding: null });
+  const lookupA = await lookupCache({ messages: chatA, queryEmbedding: null });
   assert(lookupA !== null && lookupA.entry.response.includes("Tim Cook"), "Chat A gets exact L1 cache hit");
 
   // Query Chat B (Same prompt 'Where did he study?' but different conversation context)
-  const lookupB = lookupCache({ messages: chatB, queryEmbedding: [0.1, 0.2, 0.3] });
+  const lookupB = await lookupCache({ messages: chatB, queryEmbedding: [0.1, 0.2, 0.3] });
   assert(lookupB === null, "CRITICAL: Chat B DOES NOT falsely hit Chat A's answer (Zero cross-chat collision!)");
 
   // 4. Circuit Breaker Fault-Tolerance Machine

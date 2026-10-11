@@ -21,6 +21,7 @@ import { tick, selectProvider, recordSuccess, recordFailure, getState, simulateF
 import { callGemini, callGroq } from "./proxy.js";
 import { incrementRequests, recordCacheHit, recordCacheMiss, recordLatency, getMetrics } from "./metrics.js";
 import { persistentStore } from "./storage.js";
+import { redisAdapter } from "./redisClient.js";
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -41,9 +42,11 @@ function addToHistory(entry) {
 // ---------------------------------------------------------------------------
 app.get("/health", (_req, res) => {
   const cb = getState();
+  const redisInfo = redisAdapter.getStatus();
   res.json({
     status: "ok",
     circuitBreaker: cb.state,
+    redis: redisInfo,
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -119,8 +122,8 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "messages array is required and must not be empty." });
   }
 
-  // Rate Limiting Check (Token Bucket per Gateway Token)
-  const rl = checkRateLimit(req.gatewayToken);
+  // Rate Limiting Check (Token Bucket per Gateway Token - Atomic Redis / Local)
+  const rl = await checkRateLimit(req.gatewayToken);
   if (!rl.allowed) {
     const retryAfterSec = Math.ceil(rl.retryAfterMs / 1000);
     return res.status(429).json({
@@ -150,10 +153,10 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
     // -----------------------------------------------------------------------
     if (!bypassCache) {
       // Step A: Fast L1 Exact Hash Check (O(1), zero embedding API call)
-      const l1Result = lookupCache({ messages, queryEmbedding: null });
+      const l1Result = await lookupCache({ messages, queryEmbedding: null });
       if (l1Result) {
         cacheHit = true;
-        cacheType = "L1_EXACT";
+        cacheType = l1Result.type;
         similarity = 1.0;
         responseText = l1Result.entry.response;
         modelUsed = l1Result.entry.model;
@@ -165,7 +168,7 @@ app.post("/v1/chat/completions", authMiddleware, async (req, res) => {
         try {
           queryEmbedding = await getEmbedding(userPrompt, req.userKeys.geminiKey);
           if (queryEmbedding) {
-            const l2Result = lookupCache({ messages, queryEmbedding, threshold: 0.95 });
+            const l2Result = await lookupCache({ messages, queryEmbedding, threshold: 0.95 });
             if (l2Result) {
               cacheHit = true;
               cacheType = "L2_SEMANTIC";

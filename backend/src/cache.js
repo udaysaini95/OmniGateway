@@ -6,6 +6,7 @@
 
 import crypto from "crypto";
 import { cosineSimilarity } from "./embeddings.js";
+import { redisAdapter } from "./redisClient.js";
 
 const DEFAULT_SIMILARITY_THRESHOLD = 0.95; // Production strict threshold (prevents subtle intent drift)
 const TTL_MS = 3600000; // 1 hour TTL
@@ -53,7 +54,7 @@ function getL1Key(contextFingerprint, promptText) {
  * @param {number} [params.threshold] - Optional custom threshold override
  * @returns {{ hit: boolean, type: "L1_EXACT"|"L2_SEMANTIC", entry: object, similarity?: number } | null}
  */
-export function lookupCache({ messages, queryEmbedding, threshold = DEFAULT_SIMILARITY_THRESHOLD }) {
+export async function lookupCache({ messages, queryEmbedding, threshold = DEFAULT_SIMILARITY_THRESHOLD }) {
   pruneExpired();
 
   const currentPrompt = messages[messages.length - 1]?.content ?? "";
@@ -62,11 +63,24 @@ export function lookupCache({ messages, queryEmbedding, threshold = DEFAULT_SIMI
 
   // 1. L1 Exact Match Check (O(1))
   const l1Key = getL1Key(contextFingerprint, currentPrompt);
+
+  // Check Distributed Redis L1 first if connected
+  const redisHit = await redisAdapter.getCache(l1Key);
+  if (redisHit) {
+    return {
+      hit: true,
+      type: "L1_EXACT_REDIS",
+      entry: redisHit,
+      similarity: 1.0,
+    };
+  }
+
+  // Local Memory L1 Check
   const exactMatch = l1Cache.get(l1Key);
   if (exactMatch && (now - exactMatch.createdAt <= exactMatch.ttl)) {
     return {
       hit: true,
-      type: "L1_EXACT",
+      type: "L1_EXACT_LOCAL",
       entry: exactMatch,
       similarity: 1.0,
     };
@@ -123,9 +137,12 @@ export function storeCache({ messages, promptEmbedding, response, model, tokens 
     ttl: TTL_MS,
   };
 
-  // Store in L1
+  // Store in L1 local
   const l1Key = getL1Key(contextFingerprint, currentPrompt);
   l1Cache.set(l1Key, entry);
+
+  // Store in L1 Redis (Distributed)
+  redisAdapter.setCache(l1Key, entry, Math.floor(TTL_MS / 1000)).catch(() => {});
 
   // Store in L2 if vector available
   if (promptEmbedding) {

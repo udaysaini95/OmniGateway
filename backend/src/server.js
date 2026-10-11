@@ -40,6 +40,21 @@ function addToHistory(entry) {
 // ---------------------------------------------------------------------------
 // Telemetry & Control Endpoints
 // ---------------------------------------------------------------------------
+// Root endpoint: API Gateway status
+app.get("/", (_req, res) => {
+  res.json({
+    service: "OmniGateway",
+    version: "1.0.0",
+    status: "operational",
+    endpoints: {
+      health: "/health",
+      metrics: "/api/metrics",
+      chat_completions: "/v1/chat/completions",
+      register_key: "/api/keys/register"
+    }
+  });
+});
+
 app.get("/health", (_req, res) => {
   const cb = getState();
   const redisInfo = redisAdapter.getStatus();

@@ -4,32 +4,44 @@
 
 import axios from "axios";
 
-const EMBEDDING_API =
-  "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent";
+const EMBEDDING_MODELS = [
+  "text-embedding-004",
+  "gemini-embedding-2-preview",
+  "embedding-001"
+];
 
-/**
- * Generate a 768-dimensional embedding vector for the given text
- * using Google's text-embedding-004 model (free tier).
- *
- * @param {string} text       - The prompt text to embed
- * @param {string} geminiKey  - User's decrypted Gemini API key (BYOK)
- * @returns {Promise<number[]>} - Array of 768 floats
- */
 export async function getEmbedding(text, geminiKey) {
-  const response = await axios.post(
-    `${EMBEDDING_API}?key=${geminiKey}`,
-    {
-      model: "models/text-embedding-004",
-      content: {
-        parts: [{ text }],
-      },
-    },
-    {
-      timeout: 10000,
-    }
-  );
+  let lastError = null;
 
-  return response.data.embedding.values;
+  for (const modelId of EMBEDDING_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:embedContent?key=${geminiKey}`;
+      const response = await axios.post(
+        url,
+        {
+          model: `models/${modelId}`,
+          content: {
+            parts: [{ text }],
+          },
+        },
+        {
+          timeout: 10000,
+        }
+      );
+
+      if (response.data?.embedding?.values) {
+        return response.data.embedding.values;
+      }
+    } catch (err) {
+      lastError = err;
+      if (err.response?.status === 404) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error("All embedding candidate models failed.");
 }
 
 /**

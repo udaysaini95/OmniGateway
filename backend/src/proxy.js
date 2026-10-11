@@ -1,22 +1,90 @@
 // proxy.js — Upstream LLM Call Logic (Gemini & Groq via BYOK)
 import axios from "axios";
 
-// Candidate models for Gemini in order of preference
-const GEMINI_MODELS = [
+// Active default models in order of preference
+const GEMINI_CANDIDATE_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-  "gemini-2.0-flash-exp",
   "gemini-1.5-flash-latest",
-  "gemini-1.5-flash"
+  "gemini-1.5-pro-latest"
 ];
 
-// Active Groq models in order of preference
-const GROQ_MODELS = [
+const GROQ_CANDIDATE_MODELS = [
+  "openai/gpt-oss-20b",
+  "openai/gpt-oss-120b",
+  "qwen/qwen3.6-27b",
+  "qwen/qwen3.8-27b",
   "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "llama-3.2-11b-vision-preview",
-  "llama-3.2-3b-preview"
+  "llama-3.1-8b-instant"
 ];
+
+// In-memory cache for discovered models per key
+const activeGeminiModelCache = new Map();
+const activeGroqModelCache = new Map();
+
+/**
+ * Fetch available models for the user's Gemini key
+ */
+async function getAvailableGeminiModel(geminiKey) {
+  if (activeGeminiModelCache.has(geminiKey)) {
+    return activeGeminiModelCache.get(geminiKey);
+  }
+  try {
+    const listRes = await axios.get(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`,
+      { timeout: 8000 }
+    );
+    const models = (listRes.data?.models || [])
+      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+      .map((m) => m.name.replace(/^models\//, ""));
+
+    // Find best match among candidates or take first available flash/content model
+    const matched =
+      GEMINI_CANDIDATE_MODELS.find((c) => models.includes(c)) ||
+      models.find((m) => m.includes("flash")) ||
+      models[0];
+
+    if (matched) {
+      console.log(`[proxy] Dynamically discovered Gemini model: ${matched}`);
+      activeGeminiModelCache.set(geminiKey, matched);
+      return matched;
+    }
+  } catch (err) {
+    console.warn("[proxy] Gemini listModels query failed, falling back to candidates:", err.message);
+  }
+  return GEMINI_CANDIDATE_MODELS[0];
+}
+
+/**
+ * Fetch available models for the user's Groq key
+ */
+async function getAvailableGroqModel(groqKey) {
+  if (activeGroqModelCache.has(groqKey)) {
+    return activeGroqModelCache.get(groqKey);
+  }
+  try {
+    const listRes = await axios.get("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${groqKey}` },
+      timeout: 8000,
+    });
+    const models = (listRes.data?.data || []).map((m) => m.id);
+
+    // Find best match from candidates or take first available model
+    const matched =
+      GROQ_CANDIDATE_MODELS.find((c) => models.includes(c)) ||
+      models.find((m) => m.includes("gpt-oss") || m.includes("qwen") || m.includes("llama")) ||
+      models[0];
+
+    if (matched) {
+      console.log(`[proxy] Dynamically discovered Groq model: ${matched}`);
+      activeGroqModelCache.set(groqKey, matched);
+      return matched;
+    }
+  } catch (err) {
+    console.warn("[proxy] Groq listModels query failed, falling back to candidates:", err.message);
+  }
+  return GROQ_CANDIDATE_MODELS[0];
+}
 
 export async function callGemini(messages, geminiKey) {
   const contents = messages.map((msg) => ({
@@ -24,9 +92,11 @@ export async function callGemini(messages, geminiKey) {
     parts: [{ text: msg.content }],
   }));
 
-  let lastError = null;
+  const targetModel = await getAvailableGeminiModel(geminiKey);
+  const modelsToTry = [targetModel, ...GEMINI_CANDIDATE_MODELS.filter((m) => m !== targetModel)];
 
-  for (const modelId of GEMINI_MODELS) {
+  let lastError = null;
+  for (const modelId of modelsToTry) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiKey}`;
       const response = await axios.post(
@@ -39,6 +109,7 @@ export async function callGemini(messages, geminiKey) {
 
       const text = candidate.content?.parts?.[0]?.text ?? "";
       const usage = response.data.usageMetadata ?? {};
+      activeGeminiModelCache.set(geminiKey, modelId);
       return {
         text,
         model: modelId,
@@ -47,23 +118,23 @@ export async function callGemini(messages, geminiKey) {
       };
     } catch (err) {
       lastError = err;
-      // If error is 404 (model not found/deprecated), try next model in fallback list
       if (err.response?.status === 404) {
-        console.warn(`[proxy] Gemini model ${modelId} not found, trying next model...`);
+        console.warn(`[proxy] Gemini model ${modelId} returned 404, attempting next model...`);
         continue;
       }
-      // For auth or rate limit errors, rethrow immediately
       throw err;
     }
   }
 
-  throw lastError || new Error("All Gemini candidate models failed.");
+  throw lastError || new Error("All Gemini models failed.");
 }
 
 export async function callGroq(messages, groqKey) {
-  let lastError = null;
+  const targetModel = await getAvailableGroqModel(groqKey);
+  const modelsToTry = [targetModel, ...GROQ_CANDIDATE_MODELS.filter((m) => m !== targetModel)];
 
-  for (const modelId of GROQ_MODELS) {
+  let lastError = null;
+  for (const modelId of modelsToTry) {
     try {
       const response = await axios.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -74,6 +145,7 @@ export async function callGroq(messages, groqKey) {
       if (!choice) continue;
 
       const usage = response.data.usage ?? {};
+      activeGroqModelCache.set(groqKey, modelId);
       return {
         text: choice.message?.content ?? "",
         model: modelId,
@@ -82,14 +154,13 @@ export async function callGroq(messages, groqKey) {
       };
     } catch (err) {
       lastError = err;
-      // If model is decommissioned or not found, try next active Groq model
       if (err.response?.status === 400 || err.response?.status === 404) {
-        console.warn(`[proxy] Groq model ${modelId} failed (${err.response?.data?.error?.message || err.message}), trying next model...`);
+        console.warn(`[proxy] Groq model ${modelId} failed: ${err.response?.data?.error?.message || err.message}`);
         continue;
       }
       throw err;
     }
   }
 
-  throw lastError || new Error("All Groq candidate models failed.");
+  throw lastError || new Error("All Groq models failed.");
 }
